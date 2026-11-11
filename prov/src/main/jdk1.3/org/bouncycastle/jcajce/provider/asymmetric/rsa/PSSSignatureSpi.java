@@ -237,11 +237,42 @@ public class PSSSignatureSpi
     {
         try
         {
+            checkRawHash();
+
             return pss.generateSignature();
         }
         catch (CryptoException e)
         {
             throw new SignatureException(e.getMessage());
+        }
+        finally
+        {
+            // as for verification: however this method is left, what was passed in has been
+            // consumed and the object is back in the state initSign left it in.
+            pss.reset();
+        }
+    }
+
+    /**
+     * In raw mode what has been passed in is the hash itself, not the message - mHash in RFC 8017
+     * sec. 9.1.1 and 9.1.2, "an octet string of length hLen" - so there has to be exactly one
+     * digest's worth of it. It is copied into M' as it comes: less than that would leave the rest
+     * of the hash to whatever the signer last held there, and more would either be overwritten by
+     * the salt that follows the hash, leaving a signature over only the start of what was passed
+     * in, or overrun M' altogether.
+     */
+    private void checkRawHash()
+        throws SignatureException
+    {
+        if (contentDigest instanceof NullPssDigest)
+        {
+            int hashLength = ((NullPssDigest)contentDigest).getInputLength();
+            int digestSize = contentDigest.getDigestSize();
+
+            if (hashLength != digestSize)
+            {
+                throw new SignatureException("hash for raw PSS signature must be " + digestSize + " bytes: " + hashLength + " bytes passed in");
+            }
         }
     }
 
@@ -251,6 +282,8 @@ public class PSSSignatureSpi
     {
         try
         {
+            checkRawHash();
+
             return pss.verifySignature(sigBytes);
         }
         finally
@@ -749,6 +782,11 @@ public class PSSSignatureSpi
         public void update(byte[] in, int inOff, int len)
         {
             bOut.write(in, inOff, len);
+        }
+
+        int getInputLength()
+        {
+            return bOut.size();
         }
 
         public int doFinal(byte[] out, int outOff)
