@@ -11,14 +11,19 @@ import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Security;
 import java.security.Signature;
+import java.security.SignatureException;
 import java.security.spec.ECGenParameterSpec;
 
 import org.bouncycastle.asn1.ASN1OctetString;
+import org.bouncycastle.asn1.DERNull;
+import org.bouncycastle.asn1.DEROctetString;
+import org.bouncycastle.asn1.DERSequence;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.jce.spec.ECParameterSpec;
 import org.bouncycastle.jce.spec.ECPrivateKeySpec;
 import org.bouncycastle.jce.spec.ECPublicKeySpec;
 import org.bouncycastle.math.ec.ECCurve;
+import org.bouncycastle.util.Arrays;
 import org.bouncycastle.util.Strings;
 import org.bouncycastle.util.encoders.Hex;
 import org.bouncycastle.util.test.SimpleTest;
@@ -41,6 +46,104 @@ public class DSTU4145Test
         //parametersTest();
         generateFromCurveTest();
         unrecognisedKeyInitSignTest();
+        signatureEncodingTest();
+    }
+
+    /**
+     * A DSTU 4145 signature is an OCTET STRING holding s and r as two halves of equal length. An
+     * odd number of octets is therefore not a signature, but used to be taken as one with the
+     * octet left over ignored - the last, or for the little endian form the first - so an octet
+     * of any value could be added to a signature without it ceasing to verify. Nor may anything
+     * that is not an OCTET STRING at all leave verify() as an unchecked exception.
+     */
+    private void signatureEncodingTest()
+        throws Exception
+    {
+        KeyPairGenerator keyGen = KeyPairGenerator.getInstance("DSTU4145", "BC");
+
+        keyGen.initialize(new ECGenParameterSpec("1.2.804.2.1.1.1.1.3.1.1.2.0"));
+
+        KeyPair pair = keyGen.generateKeyPair();
+
+        signatureEncodingTest("DSTU4145", pair);
+        signatureEncodingTest("GOST3411WITHDSTU4145LE", pair);
+    }
+
+    private void signatureEncodingTest(String algorithm, KeyPair pair)
+        throws Exception
+    {
+        byte[] message = new byte[]{(byte)'a', (byte)'b', (byte)'c'};
+
+        Signature sgr = Signature.getInstance(algorithm, "BC");
+
+        sgr.initSign(pair.getPrivate());
+
+        sgr.update(message);
+
+        byte[] sigBytes = sgr.sign();
+        byte[] octets = ASN1OctetString.getInstance(sigBytes).getOctets();
+
+        isTrue(algorithm + " signature not two halves", (octets.length % 2) == 0);
+
+        sgr.initVerify(pair.getPublic());
+
+        // an octet too many, at either end and of any value
+        checkNotASignature(algorithm + " signature with a zero octet appended", sgr, message,
+            new DEROctetString(Arrays.append(octets, (byte)0)).getEncoded());
+        checkNotASignature(algorithm + " signature with a non-zero octet appended", sgr, message,
+            new DEROctetString(Arrays.append(octets, (byte)0x7f)).getEncoded());
+        checkNotASignature(algorithm + " signature with a zero octet prepended", sgr, message,
+            new DEROctetString(Arrays.prepend(octets, (byte)0)).getEncoded());
+        checkNotASignature(algorithm + " signature with a non-zero octet prepended", sgr, message,
+            new DEROctetString(Arrays.prepend(octets, (byte)0x7f)).getEncoded());
+
+        // an octet too few, and none
+        checkNotASignature(algorithm + " signature with its last octet removed", sgr, message,
+            new DEROctetString(Arrays.copyOf(octets, octets.length - 1)).getEncoded());
+        checkNotASignature(algorithm + " signature of no octets", sgr, message,
+            new DEROctetString(new byte[0]).getEncoded());
+
+        // damage to the encoding around the octets
+        checkNotASignature(algorithm + " signature with data following it", sgr, message,
+            Arrays.append(sigBytes, (byte)0));
+        checkNotASignature(algorithm + " signature truncated", sgr, message,
+            Arrays.copyOf(sigBytes, sigBytes.length - 1));
+
+        // nothing, and things which are not an OCTET STRING
+        checkNotASignature(algorithm + " signature of no length", sgr, message, new byte[0]);
+        checkNotASignature(algorithm + " signature that is a NULL", sgr, message, DERNull.INSTANCE.getEncoded());
+        checkNotASignature(algorithm + " signature that is a SEQUENCE", sgr, message, new DERSequence().getEncoded());
+
+        // none of which may disturb the object: it has to be ready for the next message each time.
+        sgr.update(message);
+
+        if (!sgr.verify(sigBytes))
+        {
+            fail(algorithm + " verification failed after malformed signatures");
+        }
+    }
+
+    /**
+     * Something that is not a signature at all is reported by verify() returning false or by a
+     * SignatureException, the two answers the JCA has for it - never by returning true, and never
+     * by an unchecked exception.
+     */
+    private void checkNotASignature(String label, Signature sgr, byte[] message, byte[] sigBytes)
+        throws Exception
+    {
+        sgr.update(message);
+
+        try
+        {
+            if (sgr.verify(sigBytes))
+            {
+                fail(label + " verified");
+            }
+        }
+        catch (SignatureException e)
+        {
+            // also fine
+        }
     }
 
     private void unrecognisedKeyInitSignTest()

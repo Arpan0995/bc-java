@@ -14,6 +14,7 @@ import java.security.PublicKey;
 import java.security.SecureRandom;
 import java.security.Security;
 import java.security.Signature;
+import java.security.SignatureException;
 import java.security.cert.Certificate;
 import java.security.cert.X509Certificate;
 import java.security.spec.PKCS8EncodedKeySpec;
@@ -44,6 +45,7 @@ import org.bouncycastle.jce.spec.ECPublicKeySpec;
 import org.bouncycastle.jce.spec.GOST3410ParameterSpec;
 import org.bouncycastle.math.ec.ECConstants;
 import org.bouncycastle.math.ec.ECCurve;
+import org.bouncycastle.util.Arrays;
 import org.bouncycastle.util.BigIntegers;
 import org.bouncycastle.util.Strings;
 import org.bouncycastle.util.encoders.Base64;
@@ -881,6 +883,113 @@ public class GOST3410Test
         return oIn.readObject();
     }
 
+    /**
+     * A GOST R 34.10 signature is s followed by r, each of a fixed size, so it has exactly one
+     * length. A truncated one has always been refused; one with data appended to it used to be
+     * accepted, the extra bytes being ignored, which gave any signature an unlimited number of
+     * other encodings that verified.
+     */
+    private void signatureLengthTest()
+        throws Exception
+    {
+        KeyPairGenerator g = KeyPairGenerator.getInstance("GOST3410", "BC");
+
+        g.initialize(new GOST3410ParameterSpec(CryptoProObjectIdentifiers.gostR3410_94_CryptoPro_A.getId()), new SecureRandom());
+
+        signatureLengthTest("GOST3410", 64, g.generateKeyPair());
+
+        g = KeyPairGenerator.getInstance("ECGOST3410", "BC");
+
+        g.initialize(new ECNamedCurveGenParameterSpec("GostR3410-2001-CryptoPro-A"), new SecureRandom());
+
+        KeyPair p = g.generateKeyPair();
+
+        signatureLengthTest("ECGOST3410", 64, p);
+
+        if (Security.getProvider("BC").containsKey("KeyFactory.ECGOST3410-2012"))
+        {
+            signatureLengthTest("GOST3411WITHECGOST3410", 64, p);
+            signatureLengthTest("NONEWITHECGOST3410", 64, p);
+
+            g = KeyPairGenerator.getInstance("ECGOST3410-2012", "BC");
+
+            g.initialize(new ECNamedCurveGenParameterSpec("Tc26-Gost-3410-12-256-paramSetA"), new SecureRandom());
+
+            p = g.generateKeyPair();
+
+            signatureLengthTest("ECGOST3410-2012-256", 64, p);
+            signatureLengthTest("NONEWITHECGOST3410-2012-256", 64, p);
+
+            g.initialize(new ECNamedCurveGenParameterSpec("Tc26-Gost-3410-12-512-paramSetA"), new SecureRandom());
+
+            p = g.generateKeyPair();
+
+            signatureLengthTest("ECGOST3410-2012-512", 128, p);
+            signatureLengthTest("NONEWITHECGOST3410-2012-512", 128, p);
+        }
+    }
+
+    private void signatureLengthTest(String signatureAlg, int signatureLength, KeyPair p)
+        throws Exception
+    {
+        byte[] data = {1, 2, 3, 4, 5, 6, 7, 8, 9, 0};
+
+        Signature s = Signature.getInstance(signatureAlg, "BC");
+
+        s.initSign(p.getPrivate());
+
+        s.update(data);
+
+        byte[] sigBytes = s.sign();
+
+        isEquals(signatureAlg + " signature length", signatureLength, sigBytes.length);
+
+        s = Signature.getInstance(signatureAlg, "BC");
+
+        s.initVerify(p.getPublic());
+
+        // trailing data, whatever it is and however much of it there is
+        checkNotASignature(signatureAlg + " signature with a zero byte appended", s, data, Arrays.append(sigBytes, (byte)0));
+        checkNotASignature(signatureAlg + " signature with a non-zero byte appended", s, data, Arrays.append(sigBytes, (byte)0x7f));
+        checkNotASignature(signatureAlg + " signature with a second signature appended", s, data, Arrays.concatenate(sigBytes, sigBytes));
+
+        // and the truncated case
+        checkNotASignature(signatureAlg + " signature with its last byte removed", s, data, Arrays.copyOf(sigBytes, sigBytes.length - 1));
+        checkNotASignature(signatureAlg + " signature cut to half its length", s, data, Arrays.copyOf(sigBytes, sigBytes.length / 2));
+        checkNotASignature(signatureAlg + " signature of no length", s, data, new byte[0]);
+
+        // none of which may disturb the object: it has to be ready for the next message each time.
+        s.update(data);
+
+        if (!s.verify(sigBytes))
+        {
+            fail(signatureAlg + " verification failed after malformed signatures");
+        }
+    }
+
+    /**
+     * Something that is not a signature at all is reported by verify() returning false or by a
+     * SignatureException, the two answers the JCA has for it - never by returning true, and never
+     * by an unchecked exception.
+     */
+    private void checkNotASignature(String label, Signature s, byte[] data, byte[] sigBytes)
+        throws Exception
+    {
+        s.update(data);
+
+        try
+        {
+            if (s.verify(sigBytes))
+            {
+                fail(label + " verified");
+            }
+        }
+        catch (SignatureException e)
+        {
+            // also fine
+        }
+    }
+
     public String getName()
     {
         return "GOST3410/ECGOST3410/ECGOST3410 2012";
@@ -902,6 +1011,7 @@ public class GOST3410Test
 
         generationTest();
         parametersTest();
+        signatureLengthTest();
     }
 
     protected byte[] toByteArray(String input)
