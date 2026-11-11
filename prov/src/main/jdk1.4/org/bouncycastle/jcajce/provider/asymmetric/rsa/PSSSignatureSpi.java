@@ -238,11 +238,42 @@ public class PSSSignatureSpi
     {
         try
         {
+            checkRawHash();
+
             return pss.generateSignature();
         }
         catch (CryptoException e)
         {
             throw new SignatureException(e.getMessage());
+        }
+        finally
+        {
+            // as for verification: however this method is left, what was passed in has been
+            // consumed and the object is back in the state initSign left it in.
+            pss.reset();
+        }
+    }
+
+    /**
+     * In raw mode what has been passed in is the hash itself, not the message - mHash in RFC 8017
+     * sec. 9.1.1 and 9.1.2, "an octet string of length hLen" - so there has to be exactly one
+     * digest's worth of it. It is copied into M' as it comes: less than that would leave the rest
+     * of the hash to whatever the signer last held there, and more would either be overwritten by
+     * the salt that follows the hash, leaving a signature over only the start of what was passed
+     * in, or overrun M' altogether.
+     */
+    private void checkRawHash()
+        throws SignatureException
+    {
+        if (contentDigest instanceof NullPssDigest)
+        {
+            int hashLength = ((NullPssDigest)contentDigest).getInputLength();
+            int digestSize = contentDigest.getDigestSize();
+
+            if (hashLength != digestSize)
+            {
+                throw new SignatureException("hash for raw PSS signature must be " + digestSize + " bytes: " + hashLength + " bytes passed in");
+            }
         }
     }
 
@@ -250,7 +281,20 @@ public class PSSSignatureSpi
         byte[]  sigBytes) 
         throws SignatureException
     {
-        return pss.verifySignature(sigBytes);
+        try
+        {
+            checkRawHash();
+
+            return pss.verifySignature(sigBytes);
+        }
+        finally
+        {
+            // however this method is left the message has been consumed, and the object goes back
+            // to the state initVerify left it in. For the standard digests that has already happened;
+            // in raw mode it is what puts the content digest back to the first of its two turns when
+            // the verification failed before taking the second.
+            pss.reset();
+        }
     }
 
     protected void engineSetParameter(
@@ -741,6 +785,11 @@ public class PSSSignatureSpi
             bOut.write(in, inOff, len);
         }
 
+        int getInputLength()
+        {
+            return bOut.size();
+        }
+
         public int doFinal(byte[] out, int outOff)
         {
             byte[] res = bOut.toByteArray();
@@ -756,9 +805,12 @@ public class PSSSignatureSpi
                 baseDigest.doFinal(out, outOff);
             }
 
+            // reset() goes back to the first turn, so the one just taken is noted before it is called.
+            boolean wasOddTime = oddTime;
+
             reset();
 
-            oddTime = !oddTime;
+            oddTime = !wasOddTime;
 
             return res.length;
         }
@@ -767,6 +819,9 @@ public class PSSSignatureSpi
         {
             bOut.reset();
             baseDigest.reset();
+            // a reset from outside starts on a new signature: whichever turn was due, the next
+            // doFinal() is the first of a pair again and hands back the hash it was given.
+            oddTime = true;
         }
 
         public int getByteLength()

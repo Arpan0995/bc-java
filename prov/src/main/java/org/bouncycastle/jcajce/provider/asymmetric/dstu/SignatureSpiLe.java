@@ -1,6 +1,5 @@
 package org.bouncycastle.jcajce.provider.asymmetric.dstu;
 
-import java.io.IOException;
 import java.security.SignatureException;
 
 import org.bouncycastle.asn1.ASN1OctetString;
@@ -46,9 +45,12 @@ public class SignatureSpiLe
         {
             bytes = ((ASN1OctetString)ASN1OctetString.fromByteArray(sigBytes)).getOctets();
         }
-        catch (IOException e)
+        catch (Exception e)
         {
-            throw new SignatureException("error decoding signature bytes.");
+            // no encoding at all, or one of something other than an OCTET STRING, as well as one
+            // that cannot be read. The parent class refuses each of these in the same way, and
+            // leaving it to do so means the message is consumed whichever way this method is left.
+            return super.engineVerify(sigBytes);
         }
 
         reverseBytes(bytes);

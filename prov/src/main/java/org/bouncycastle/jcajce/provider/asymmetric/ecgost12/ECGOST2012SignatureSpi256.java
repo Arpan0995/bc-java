@@ -178,6 +178,14 @@ public class ECGOST2012SignatureSpi256
 
         digest.doFinal(hash, 0);
 
+        // s followed by r, each half the size, is the whole of a signature: one that is any longer
+        // is no more a signature than one that is too short, and reading only the start of it would
+        // let anything at all be appended to a valid signature without it ceasing to verify.
+        if (sigBytes.length != size)
+        {
+            throw new SignatureException("error decoding signature bytes.");
+        }
+
         BigInteger[]    sig;
 
         try

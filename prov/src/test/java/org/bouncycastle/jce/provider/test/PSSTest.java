@@ -316,6 +316,9 @@ public class PSSTest
         rawModeTest("SHA384withRSA/PSS", NISTObjectIdentifiers.id_sha384, priv2048Key, pub2048Key, random);
         rawModeTest("SHA512withRSA/PSS", NISTObjectIdentifiers.id_sha512, priv2048Key, pub2048Key, random);
 
+        rawModeFailedVerifyTest(priv2048Key, pub2048Key);
+        rawModeHashLengthTest(priv2048Key, pub2048Key);
+
         testShake128Pss();
         testShake256Pss();
         testShake128Sha256Pss();
@@ -604,6 +607,197 @@ public class PSSTest
         s.update(msg);
 
         isTrue("2 sha512 shake256 failed", s.verify(sig));
+    }
+
+    /**
+     * In raw mode the one digest object the lightweight signer is given stands in turn for two
+     * things, the hash that is passed in and then the hash calculated over M', and a verification
+     * that failed before it reached the second left it a turn out. Whatever the Signature was used
+     * for next then threw ArrayIndexOutOfBoundsException - verifying or signing, and initialising
+     * it again made no difference, as that did not put the turn back.
+     */
+    private void rawModeFailedVerifyTest(PrivateKey privKey, PublicKey pubKey)
+        throws Exception
+    {
+        PSSParameterSpec spec = new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1);
+        byte[] hash = MessageDigest.getInstance("SHA-256", "BC").digest(msg1a);
+
+        Signature rawSig = Signature.getInstance("RAWRSASSA-PSS", "BC");
+
+        rawSig.setParameter(spec);
+
+        rawSig.initSign(privKey);
+        rawSig.update(hash);
+        byte[] sig = rawSig.sign();
+
+        byte[] flipped = Arrays.clone(sig);
+
+        flipped[flipped.length / 2] ^= 0x01;
+
+        byte[][] malformed = new byte[][]
+            {
+                flipped,                                // a signature, but of nothing
+                Arrays.copyOf(sig, sig.length - 1),     // truncated
+                Arrays.append(sig, (byte)0),            // longer than the key allows
+                new byte[sig.length],                   // zero
+                new byte[0]                             // nothing at all
+            };
+
+        // the same object, taking the next message as it is.
+        rawSig.initVerify(pubKey);
+
+        for (int i = 0; i != malformed.length; i++)
+        {
+            rawSig.update(hash);
+            isTrue("raw mode malformed signature " + i + " verified", !rawSig.verify(malformed[i]));
+
+            rawSig.update(hash);
+            isTrue("raw mode verification failed after malformed signature " + i, rawSig.verify(sig));
+        }
+
+        // initialised again after the failure, for verification
+        rawSig.update(hash);
+        isTrue("raw mode malformed signature verified", !rawSig.verify(flipped));
+
+        rawSig.initVerify(pubKey);
+        rawSig.update(hash);
+        isTrue("raw mode verification failed after malformed signature and initVerify", rawSig.verify(sig));
+
+        // and for signing
+        rawSig.update(hash);
+        isTrue("raw mode malformed signature verified", !rawSig.verify(flipped));
+
+        rawSig.initSign(privKey);
+        rawSig.update(hash);
+        byte[] sigAfter = rawSig.sign();
+
+        rawSig.initVerify(pubKey);
+        rawSig.update(hash);
+        isTrue("raw mode signature generated after malformed signature failed", rawSig.verify(sigAfter));
+
+        // a signature that fails only on the hash it was made over was never a problem, and still is not.
+        byte[] otherHash = MessageDigest.getInstance("SHA-256", "BC").digest(hash);
+
+        rawSig.update(otherHash);
+        isTrue("raw mode signature verified for another hash", !rawSig.verify(sig));
+
+        rawSig.update(hash);
+        isTrue("raw mode verification failed after signature for another hash", rawSig.verify(sig));
+    }
+
+    /**
+     * In raw mode what is passed in is the hash to be signed - mHash, which RFC 8017 sec. 9.1.1
+     * has as "an octet string of length hLen" - and nothing checked that it was that length. It
+     * was copied into M' as it came: bytes beyond the hash were overwritten by the salt, so a
+     * signature verified for its hash with up to a salt's worth of anything appended, and under
+     * the default SHA-1 parameters a SHA-256 hash was signed as its first 20 bytes; fewer bytes
+     * than the hash left the rest of it to whatever the last operation had put there; and more
+     * than hash and salt together overran M' with an ArrayIndexOutOfBoundsException.
+     */
+    private void rawModeHashLengthTest(PrivateKey privKey, PublicKey pubKey)
+        throws Exception
+    {
+        PSSParameterSpec spec = new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1);
+        byte[] hash = MessageDigest.getInstance("SHA-256", "BC").digest(msg1a);
+
+        Signature rawSig = Signature.getInstance("RAWRSASSA-PSS", "BC");
+
+        rawSig.setParameter(spec);
+
+        rawSig.initSign(privKey);
+        rawSig.update(hash);
+        byte[] sig = rawSig.sign();
+
+        byte[][] notHashes = new byte[][]
+            {
+                Arrays.append(hash, (byte)0x7f),            // the hash and a byte
+                Arrays.concatenate(hash, new byte[32]),     // the hash and as much again as the salt
+                Arrays.concatenate(hash, new byte[33]),     // more than the hash and the salt
+                new byte[200],
+                Arrays.copyOf(hash, hash.length - 1),       // the hash less a byte
+                new byte[1],
+                new byte[0]                                 // nothing at all
+            };
+
+        // signing: refused, and the object ready for a hash straight afterwards.
+        rawSig.initSign(privKey);
+
+        for (int i = 0; i != notHashes.length; i++)
+        {
+            rawSig.update(notHashes[i]);
+
+            try
+            {
+                rawSig.sign();
+
+                fail("raw mode signed " + notHashes[i].length + " bytes as a SHA-256 hash");
+            }
+            catch (SignatureException e)
+            {
+                isEquals("hash for raw PSS signature must be 32 bytes: " + notHashes[i].length + " bytes passed in", e.getMessage());
+            }
+
+            rawSig.update(hash);
+
+            checkRawSignature("raw mode signature after " + notHashes[i].length + " bytes refused", spec, pubKey, hash, rawSig.sign());
+        }
+
+        // verifying: likewise, the signature being a good one for the hash throughout.
+        rawSig.initVerify(pubKey);
+
+        for (int i = 0; i != notHashes.length; i++)
+        {
+            rawSig.update(notHashes[i]);
+
+            try
+            {
+                if (rawSig.verify(sig))
+                {
+                    fail("raw mode signature verified for " + notHashes[i].length + " bytes in place of its hash");
+                }
+
+                fail("raw mode verified against " + notHashes[i].length + " bytes as a SHA-256 hash");
+            }
+            catch (SignatureException e)
+            {
+                isEquals("hash for raw PSS signature must be 32 bytes: " + notHashes[i].length + " bytes passed in", e.getMessage());
+            }
+
+            rawSig.update(hash);
+
+            isTrue("raw mode verification failed after " + notHashes[i].length + " bytes refused", rawSig.verify(sig));
+        }
+
+        // the size follows the parameters: under the default ones, which are SHA-1, a SHA-256 hash is
+        // not one - it used to be signed as its first 20 bytes, so verified for any hash sharing them.
+        rawSig = Signature.getInstance("RAWRSASSA-PSS", "BC");
+
+        rawSig.initSign(privKey);
+        rawSig.update(hash);
+
+        try
+        {
+            rawSig.sign();
+
+            fail("raw mode signed a SHA-256 hash under SHA-1 parameters");
+        }
+        catch (SignatureException e)
+        {
+            isEquals("hash for raw PSS signature must be 20 bytes: 32 bytes passed in", e.getMessage());
+        }
+    }
+
+    private void checkRawSignature(String message, PSSParameterSpec spec, PublicKey pubKey, byte[] hash, byte[] sig)
+        throws Exception
+    {
+        Signature rawSig = Signature.getInstance("RAWRSASSA-PSS", "BC");
+
+        rawSig.setParameter(spec);
+
+        rawSig.initVerify(pubKey);
+        rawSig.update(hash);
+
+        isTrue(message, rawSig.verify(sig));
     }
 
     private void rawModeTest(String sigName, ASN1ObjectIdentifier digestOID,

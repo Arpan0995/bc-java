@@ -156,6 +156,14 @@ public class SignatureSpi
         {
             byte[] bytes = ((ASN1OctetString)ASN1OctetString.fromByteArray(sigBytes)).getOctets();
 
+            // s and r are the two halves of the octets, so there is an even number of them: splitting
+            // an odd number would leave the last one out, to be any value at all in a signature that
+            // went on verifying. The exception is reported as any other failure to decode is, below.
+            if ((bytes.length & 1) != 0)
+            {
+                throw new IllegalArgumentException("signature octets not two values of equal length");
+            }
+
             byte[] r = new byte[bytes.length / 2];
             byte[] s = new byte[bytes.length / 2];
 

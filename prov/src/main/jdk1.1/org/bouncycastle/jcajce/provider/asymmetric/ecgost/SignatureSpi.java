@@ -20,9 +20,7 @@ import org.bouncycastle.crypto.signers.ECGOST3410Signer;
 import org.bouncycastle.jcajce.provider.asymmetric.util.ECUtil;
 import org.bouncycastle.jce.interfaces.ECKey;
 import org.bouncycastle.jce.interfaces.ECPublicKey;
-import org.bouncycastle.jce.interfaces.GOST3410Key;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.jcajce.provider.asymmetric.util.GOST3410Util;
 
 public class SignatureSpi
     extends java.security.Signature
@@ -45,13 +43,11 @@ public class SignatureSpi
     {
         CipherParameters    param;
 
+        // an elliptic curve key and nothing else: a GOST R 34.10-94 key belongs with the GOST3410
+        // signature, and like any other key the signer cannot use ends at the InvalidKeyException below.
         if (publicKey instanceof ECPublicKey)
         {
             param = ECUtil.generatePublicKeyParameter(publicKey);
-        }
-        else if (publicKey instanceof GOST3410Key)
-        {
-            param = GOST3410Util.generatePublicKeyParameter(publicKey);
         }
         else
         {
@@ -85,7 +81,8 @@ public class SignatureSpi
         }
         else
         {
-            param = GOST3410Util.generatePrivateKeyParameter(privateKey);
+            // as for verification an elliptic curve key and nothing else.
+            throw new InvalidKeyException("can't recognise key type in ECGOST3410 signer");
         }
 
         digest.reset();
@@ -163,6 +160,14 @@ public class SignatureSpi
         byte[]  hash = new byte[digest.getDigestSize()];
 
         digest.doFinal(hash, 0);
+
+        // s followed by r, 32 bytes each, is the whole of a signature: one that is any longer is
+        // no more a signature than one that is too short, and reading only the first 64 bytes of
+        // it would let anything at all be appended to a valid signature without it ceasing to verify.
+        if (sigBytes.length != 64)
+        {
+            throw new SignatureException("error decoding signature bytes.");
+        }
 
         BigInteger[]    sig;
 

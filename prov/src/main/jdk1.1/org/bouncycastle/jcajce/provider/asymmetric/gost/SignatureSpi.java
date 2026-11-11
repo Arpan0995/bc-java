@@ -17,9 +17,6 @@ import org.bouncycastle.crypto.Digest;
 import org.bouncycastle.crypto.digests.GOST3411Digest;
 import org.bouncycastle.crypto.params.ParametersWithRandom;
 import org.bouncycastle.crypto.signers.GOST3410Signer;
-import org.bouncycastle.jcajce.provider.asymmetric.util.ECUtil;
-import org.bouncycastle.jce.interfaces.ECKey;
-import org.bouncycastle.jce.interfaces.ECPublicKey;
 import org.bouncycastle.jce.interfaces.GOST3410Key;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.jcajce.provider.asymmetric.util.GOST3410Util;
@@ -45,11 +42,9 @@ public class SignatureSpi
     {
         CipherParameters    param;
 
-        if (publicKey instanceof ECPublicKey)
-        {
-            param = ECUtil.generatePublicKeyParameter(publicKey);
-        }
-        else if (publicKey instanceof GOST3410Key)
+        // a GOST R 34.10-94 key and nothing else: an elliptic curve key belongs with the ECGOST3410
+        // signatures, and like any other key the signer cannot use ends at the InvalidKeyException below.
+        if (publicKey instanceof GOST3410Key)
         {
             param = GOST3410Util.generatePublicKeyParameter(publicKey);
         }
@@ -61,14 +56,7 @@ public class SignatureSpi
 
                 publicKey = BouncyCastleProvider.getPublicKey(SubjectPublicKeyInfo.getInstance(bytes));
 
-                if (publicKey instanceof ECPublicKey)
-                {
-                    param = ECUtil.generatePublicKeyParameter(publicKey);
-                }
-                else
-                {
-                    throw new InvalidKeyException("can't recognise key type in DSA based signer");
-                }
+                param = GOST3410Util.generatePublicKeyParameter(publicKey);
             }
             catch (Exception e)
             {
@@ -93,16 +81,8 @@ public class SignatureSpi
         PrivateKey  privateKey)
         throws InvalidKeyException
     {
-        CipherParameters    param;
-
-        if (privateKey instanceof ECKey)
-        {
-            param = ECUtil.generatePrivateKeyParameter(privateKey);
-        }
-        else
-        {
-            param = GOST3410Util.generatePrivateKeyParameter(privateKey);
-        }
+        // as for verification a GOST R 34.10-94 key and nothing else, which the conversion checks.
+        CipherParameters    param = GOST3410Util.generatePrivateKeyParameter(privateKey);
 
         digest.reset();
 
@@ -179,6 +159,14 @@ public class SignatureSpi
         byte[]  hash = new byte[digest.getDigestSize()];
 
         digest.doFinal(hash, 0);
+
+        // s followed by r, 32 bytes each, is the whole of a signature: one that is any longer is
+        // no more a signature than one that is too short, and reading only the first 64 bytes of
+        // it would let anything at all be appended to a valid signature without it ceasing to verify.
+        if (sigBytes.length != 64)
+        {
+            throw new SignatureException("error decoding signature bytes.");
+        }
 
         BigInteger[]    sig;
 
