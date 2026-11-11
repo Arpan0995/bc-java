@@ -20,9 +20,7 @@ import org.bouncycastle.crypto.params.AsymmetricKeyParameter;
 import org.bouncycastle.jcajce.provider.asymmetric.util.ECUtil;
 import org.bouncycastle.jce.interfaces.ECKey;
 import org.bouncycastle.jce.interfaces.ECPublicKey;
-import org.bouncycastle.jce.interfaces.GOST3410Key;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.jcajce.provider.asymmetric.util.GOST3410Util;
 
 public class SignatureSpi
     extends java.security.Signature
@@ -44,13 +42,11 @@ public class SignatureSpi
     {
         CipherParameters    param;
 
+        // an elliptic curve key and nothing else: a GOST R 34.10-94 key belongs with the GOST3410
+        // signature, and like any other key the signer cannot use ends at the InvalidKeyException below.
         if (publicKey instanceof ECPublicKey)
         {
             param = generatePublicKeyParameter(publicKey);
-        }
-        else if (publicKey instanceof GOST3410Key)
-        {
-            param = GOST3410Util.generatePublicKeyParameter(publicKey);
         }
         else
         {
@@ -84,7 +80,8 @@ public class SignatureSpi
         }
         else
         {
-            param = GOST3410Util.generatePrivateKeyParameter(privateKey);
+            // as for verification an elliptic curve key and nothing else.
+            throw new InvalidKeyException("can't recognise key type in ECGOST3410 signer");
         }
 
         digest.reset();
