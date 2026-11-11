@@ -123,7 +123,18 @@ public class SignatureSpi
         byte[] hash = new byte[digest.getDigestSize()];
         digest.doFinal(hash, 0);
 
-        return signer.verifySignature(hash, sigBytes);
+        try
+        {
+            return signer.verifySignature(hash, sigBytes);
+        }
+        catch (IllegalArgumentException e)
+        {
+            // the signature is not the size a SPHINCS-256 signature is, which the lightweight
+            // signer checks before it does anything else and is the one thing it throws this for.
+            // Something of the wrong size is simply not a valid signature, and the JCA contract is
+            // to say so rather than to let the unchecked exception escape.
+            return false;
+        }
     }
 
     protected void engineSetParameter(AlgorithmParameterSpec params)

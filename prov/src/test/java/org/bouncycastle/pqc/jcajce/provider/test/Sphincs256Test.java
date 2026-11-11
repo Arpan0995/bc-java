@@ -1205,6 +1205,59 @@ public class Sphincs256Test
         assertTrue(Arrays.areEqual(expSha3Sig, s));
     }
 
+    /**
+     * A SPHINCS-256 signature has one length, and verify() given anything else answers false as
+     * it does for any other signature that is not valid - the lightweight signer's
+     * IllegalArgumentException("signature wrong size") used to come straight through.
+     */
+    public void testSphincsWrongSizeSignature()
+        throws Exception
+    {
+        doTestWrongSizeSignature("SHA512withSPHINCS256", SPHINCS256KeyGenParameterSpec.SHA512_256);
+        doTestWrongSizeSignature("SHA3-512withSPHINCS256", SPHINCS256KeyGenParameterSpec.SHA3_256);
+    }
+
+    private void doTestWrongSizeSignature(String algorithm, String treeDigest)
+        throws Exception
+    {
+        KeyPairGenerator kpg = KeyPairGenerator.getInstance("SPHINCS256", "BCPQC");
+
+        kpg.initialize(new SPHINCS256KeyGenParameterSpec(treeDigest), new SecureRandom());
+
+        KeyPair kp = kpg.generateKeyPair();
+
+        Signature sig = Signature.getInstance(algorithm, "BCPQC");
+
+        sig.initSign(kp.getPrivate());
+
+        sig.update(msg, 0, msg.length);
+
+        byte[] s = sig.sign();
+
+        byte[][] wrongSize = new byte[][]
+            {
+                Arrays.append(s, (byte)0),
+                Arrays.concatenate(s, s),
+                Arrays.copyOf(s, s.length - 1),
+                new byte[3],
+                new byte[0]
+            };
+
+        sig.initVerify(kp.getPublic());
+
+        for (int i = 0; i != wrongSize.length; i++)
+        {
+            sig.update(msg, 0, msg.length);
+
+            assertFalse(algorithm + " wrong size signature " + i + " verified", sig.verify(wrongSize[i]));
+
+            // and the object is ready for the next message.
+            sig.update(msg, 0, msg.length);
+
+            assertTrue(algorithm + " failed after wrong size signature " + i, sig.verify(s));
+        }
+    }
+
     public void testSphincsRandomSigSHA3()
         throws Exception
     {
