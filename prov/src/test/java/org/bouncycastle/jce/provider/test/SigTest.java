@@ -28,7 +28,9 @@ import org.bouncycastle.asn1.nist.NISTObjectIdentifiers;
 import org.bouncycastle.asn1.pkcs.PKCSObjectIdentifiers;
 import org.bouncycastle.asn1.x509.DigestInfo;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
+import org.bouncycastle.jce.spec.ECNamedCurveGenParameterSpec;
 import org.bouncycastle.util.Arrays;
+import org.bouncycastle.util.BigIntegers;
 import org.bouncycastle.util.encoders.Hex;
 import org.bouncycastle.util.test.SimpleTest;
 
@@ -291,6 +293,25 @@ public class SigTest
         trySig("SHA512(256)WithRSA/X9.31", data, signingKey, verifyKey);
         trySig("WhirlpoolWithRSA/X9.31", data, signingKey, verifyKey);
 
+        failedVerifyTest("SHA1WithRSA/ISO9796-2", signingKey, verifyKey);
+        failedVerifyTest("SHA256withRSA/ISO9796-2", signingKey, verifyKey);
+        failedVerifyTest("SHA384WithRSA/ISO9796-2", signingKey, verifyKey);
+        failedVerifyTest("RIPEMD160WithRSA/ISO9796-2", signingKey, verifyKey);
+        failedVerifyTest("SHA1WithRSA/X9.31", signingKey, verifyKey);
+        failedVerifyTest("SHA256withRSA/X9.31", signingKey, verifyKey);
+        failedVerifyTest("SHA384WithRSA/X9.31", signingKey, verifyKey);
+        failedVerifyTest("SHA512(256)WithRSA/X9.31", signingKey, verifyKey);
+
+        isoTrailerTest("SHA256withRSA/ISO9796-2", (RSAPrivateKey)signingKey, (RSAPublicKey)verifyKey);
+        isoTrailerTest("SHA384WithRSA/ISO9796-2", (RSAPrivateKey)signingKey, (RSAPublicKey)verifyKey);
+        isoTrailerTest("MD5WithRSA/ISO9796-2", (RSAPrivateKey)signingKey, (RSAPublicKey)verifyKey);
+
+        x931ShortBlockTest("SHA1WithRSA/X9.31", (RSAPrivateKey)signingKey, (RSAPublicKey)verifyKey);
+        x931ShortBlockTest("SHA256withRSA/X9.31", (RSAPrivateKey)signingKey, (RSAPublicKey)verifyKey);
+
+        rsaKeyTypeTest("SHA256withRSA/ISO9796-2");
+        rsaKeyTypeTest("SHA256withRSA/X9.31");
+
         tryPssSig("SHA224withRSAandSHAKE128", data, signingKey, verifyKey);
         tryPssSig("SHA224withRSAandSHAKE256", data, signingKey, verifyKey);
         tryPssSig("SHA512(224)withRSAandSHAKE128", data, signingKey, verifyKey);
@@ -362,6 +383,196 @@ public class SigTest
         if (!sig.verify(sigBytes))
         {
             fail("RIPEMD160/ISO verification failed");
+        }
+    }
+
+    /**
+     * A verify() that does not succeed still has to leave the object ready for the next message.
+     * The ISO 9796-2 and X9.31 signers left most failed verifications without discarding the
+     * message they had been given, so the next one was added to it and a valid signature was
+     * then rejected.
+     */
+    private void failedVerifyTest(String algorithm, PrivateKey signingKey, PublicKey verifyKey)
+        throws Exception
+    {
+        // a short message, and one too long for ISO 9796-2 to recover in full from the signature.
+        failedVerifyTest(algorithm, new byte[10], signingKey, verifyKey);
+        failedVerifyTest(algorithm, new byte[600], signingKey, verifyKey);
+    }
+
+    private void failedVerifyTest(String algorithm, byte[] data, PrivateKey signingKey, PublicKey verifyKey)
+        throws Exception
+    {
+        Signature sig = Signature.getInstance(algorithm, "BC");
+
+        sig.initSign(signingKey);
+
+        sig.update(data);
+
+        byte[] sigBytes = sig.sign();
+
+        byte[] flipped = Arrays.clone(sigBytes);
+
+        flipped[flipped.length / 2] ^= 0x01;
+
+        byte[] allOnes = new byte[sigBytes.length];
+
+        Arrays.fill(allOnes, (byte)0xff);
+
+        byte[][] malformed = new byte[][]
+            {
+                flipped,                                        // a signature, but of something else
+                Arrays.copyOf(sigBytes, sigBytes.length - 1),   // truncated
+                Arrays.append(sigBytes, (byte)0),               // longer than the key allows
+                allOnes,                                        // larger than the modulus
+                new byte[sigBytes.length],                      // zero
+                new byte[0]                                     // nothing at all
+            };
+
+        sig.initVerify(verifyKey);
+
+        for (int i = 0; i != malformed.length; i++)
+        {
+            checkNotASignature(algorithm + " malformed signature " + i, sig, data, malformed[i]);
+
+            sig.update(data);
+
+            if (!sig.verify(sigBytes))
+            {
+                fail(algorithm + " verification failed after malformed signature " + i
+                    + " with a message of " + data.length + " bytes");
+            }
+        }
+    }
+
+    /**
+     * Something that is not a signature at all is reported by verify() returning false or by a
+     * SignatureException, the two answers the JCA has for it - never by returning true, and never
+     * by an unchecked exception.
+     */
+    private void checkNotASignature(String label, Signature sig, byte[] data, byte[] sigBytes)
+        throws Exception
+    {
+        sig.update(data);
+
+        try
+        {
+            if (sig.verify(sigBytes))
+            {
+                fail(label + " verified");
+            }
+        }
+        catch (SignatureException e)
+        {
+            // also fine
+        }
+    }
+
+    /**
+     * A signature whose recovered block is well formed for ISO 9796-2 but closes with a trailer
+     * other than the one for the digest in use came out of verify() as the lightweight signer's
+     * IllegalStateException - about one randomly damaged signature in seventy does this.
+     */
+    private void isoTrailerTest(String algorithm, RSAPrivateKey signingKey, RSAPublicKey verifyKey)
+        throws Exception
+    {
+        byte[] data = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0 };
+        BigInteger mod = verifyKey.getModulus();
+        int blockLength = (mod.bitLength() + 7) / 8;
+
+        // header and padding as the standard has them, then a trailer no digest has been given.
+        byte[] block = new byte[blockLength];
+
+        Arrays.fill(block, (byte)0xbb);
+        block[0] = 0x4b;
+        block[blockLength - 2] = 0x7f;
+        block[blockLength - 1] = (byte)0xcc;
+
+        byte[] badTrailer = BigIntegers.asUnsignedByteArray(blockLength,
+            new BigInteger(1, block).modPow(signingKey.getPrivateExponent(), mod));
+
+        Signature sig = Signature.getInstance(algorithm, "BC");
+
+        sig.initSign(signingKey);
+
+        sig.update(data);
+
+        byte[] sigBytes = sig.sign();
+
+        sig.initVerify(verifyKey);
+
+        checkNotASignature(algorithm + " signature with another digest's trailer", sig, data, badTrailer);
+
+        sig.update(data);
+
+        if (!sig.verify(sigBytes))
+        {
+            fail(algorithm + " verification failed after signature with another digest's trailer");
+        }
+    }
+
+    /**
+     * The value recovered from an X9.31 signature can be shorter than the modulus, and verify()
+     * built the block to compare it with at that length: where it was the difference between the
+     * value and the modulus that carried the trailer nibble, a full length value, the comparison
+     * left as an unchecked exception rather than as the answer false.
+     */
+    private void x931ShortBlockTest(String algorithm, RSAPrivateKey signingKey, RSAPublicKey verifyKey)
+        throws Exception
+    {
+        byte[] data = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 0 };
+        BigInteger mod = verifyKey.getModulus();
+        int blockLength = (mod.bitLength() + 7) / 8;
+
+        // t not ending in the nibble 0xc while n - t does, in one byte and in one byte short of the modulus.
+        BigInteger t = mod.subtract(BigInteger.valueOf(12)).mod(BigInteger.valueOf(16));
+        BigInteger[] recovered = new BigInteger[]{ t, BigInteger.ONE.shiftLeft(8 * (blockLength - 1) - 1).add(t) };
+
+        Signature sig = Signature.getInstance(algorithm, "BC");
+
+        sig.initVerify(verifyKey);
+
+        for (int i = 0; i != recovered.length; i++)
+        {
+            checkNotASignature(algorithm + " signature recovering to a short value " + i, sig, data,
+                BigIntegers.asUnsignedByteArray(blockLength, recovered[i].modPow(signingKey.getPrivateExponent(), mod)));
+        }
+    }
+
+    /**
+     * A key that is not an RSA key is refused with an InvalidKeyException, not a ClassCastException.
+     */
+    private void rsaKeyTypeTest(String algorithm)
+        throws Exception
+    {
+        KeyPairGenerator kpGen = KeyPairGenerator.getInstance("EC", "BC");
+
+        kpGen.initialize(new ECNamedCurveGenParameterSpec("P-256"));
+
+        KeyPair kp = kpGen.generateKeyPair();
+
+        Signature sig = Signature.getInstance(algorithm, "BC");
+
+        try
+        {
+            sig.initSign(kp.getPrivate());
+
+            fail(algorithm + " initSign accepted an EC key");
+        }
+        catch (InvalidKeyException e)
+        {
+            // expected
+        }
+
+        try
+        {
+            sig.initVerify(kp.getPublic());
+
+            fail(algorithm + " initVerify accepted an EC key");
+        }
+        catch (InvalidKeyException e)
+        {
+            // expected
         }
     }
 

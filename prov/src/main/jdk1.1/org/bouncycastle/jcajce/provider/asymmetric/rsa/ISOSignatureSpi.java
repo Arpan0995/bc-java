@@ -23,6 +23,7 @@ import org.bouncycastle.crypto.digests.SHA512tDigest;
 import org.bouncycastle.crypto.digests.WhirlpoolDigest;
 import org.bouncycastle.crypto.engines.RSABlindedEngine;
 import org.bouncycastle.crypto.signers.ISO9796d2Signer;
+import org.bouncycastle.jcajce.provider.util.SecurityExceptions;
 
 public class ISOSignatureSpi
     extends Signature
@@ -41,6 +42,11 @@ public class ISOSignatureSpi
         PublicKey publicKey)
         throws InvalidKeyException
     {
+        if (!(publicKey instanceof RSAPublicKey))
+        {
+            throw new InvalidKeyException("Supplied key is not a RSAPublicKey instance");
+        }
+
         CipherParameters param = RSAUtil.generatePublicKeyParameter((RSAPublicKey)publicKey);
 
         signer.init(false, param);
@@ -50,6 +56,11 @@ public class ISOSignatureSpi
         PrivateKey privateKey)
         throws InvalidKeyException
     {
+        if (!(privateKey instanceof RSAPrivateKey))
+        {
+            throw new InvalidKeyException("Supplied key is not a RSAPrivateKey instance");
+        }
+
         CipherParameters param = RSAUtil.generatePrivateKeyParameter((RSAPrivateKey)privateKey);
 
         signer.init(true, param);
@@ -90,9 +101,29 @@ public class ISOSignatureSpi
         byte[]  sigBytes) 
         throws SignatureException
     {
-        boolean yes = signer.verifySignature(sigBytes);
-
-        return yes;
+        try
+        {
+            return signer.verifySignature(sigBytes);
+        }
+        catch (IllegalStateException e)
+        {
+            // the block recovered from the signature is well formed, but closes with the trailer of
+            // a digest other than the one in use. That is a signature this engine cannot process
+            // rather than one which fails to verify, for which the JCA has SignatureException.
+            throw SecurityExceptions.signatureException(e.getMessage(), e);
+        }
+        catch (IllegalArgumentException e)
+        {
+            // as above, where the digest in use is one with no trailer of its own to compare with.
+            throw SecurityExceptions.signatureException(e.getMessage(), e);
+        }
+        finally
+        {
+            // however this method is left the message has been consumed, and the object goes back
+            // to the state initVerify left it in: the signer has ways out of a failed verification
+            // that leave the message in its digest, for the next one to be added to.
+            signer.reset();
+        }
     }
 
     protected void engineSetParameter(

@@ -9,6 +9,7 @@ import org.bouncycastle.crypto.params.RSAKeyParameters;
 import org.bouncycastle.crypto.params.RSAPrivateCrtKeyParameters;
 import org.bouncycastle.crypto.signers.X931Signer;
 import org.bouncycastle.util.Arrays;
+import org.bouncycastle.util.BigIntegers;
 import org.bouncycastle.util.encoders.Base64;
 import org.bouncycastle.util.encoders.Hex;
 import org.bouncycastle.util.test.SimpleTest;
@@ -53,6 +54,38 @@ public class X931SignerTest
         shouldPassSignatureTest1();
         shouldPassSignatureTest2();
         shouldPassSignatureTest3();
+        shouldRejectShortRecoveredValue(rsaPublic, rsaPrivate, msg);
+    }
+
+    /**
+     * The value recovered from a signature is not always as long as the modulus, the RSA engine
+     * returning it without its leading zeroes. Where it is short, and it is its difference from
+     * the modulus which carries the trailer nibble, there is nothing to verify - but the block to
+     * compare with was built at the length recovered, and the difference, a full length value,
+     * then left verifySignature() as an exception rather than as false.
+     */
+    private void shouldRejectShortRecoveredValue(RSAKeyParameters rsaPublic, RSAPrivateCrtKeyParameters rsaPrivate, byte[] msg)
+        throws Exception
+    {
+        BigInteger mod = rsaPublic.getModulus();
+        int blockLength = (mod.bitLength() + 7) / 8;
+
+        // t not ending in the nibble 0xc while n - t does, in one byte and in one byte short of the modulus.
+        BigInteger t = mod.subtract(BigInteger.valueOf(12)).mod(BigInteger.valueOf(16));
+        BigInteger[] recovered = new BigInteger[]{ t, BigInteger.ONE.shiftLeft(8 * (blockLength - 1) - 1).add(t) };
+
+        for (int i = 0; i != recovered.length; i++)
+        {
+            byte[] sig = BigIntegers.asUnsignedByteArray(blockLength, recovered[i].modPow(rsaPrivate.getExponent(), mod));
+
+            X931Signer signer = new X931Signer(new RSAEngine(), new SHA1Digest());
+            signer.init(false, rsaPublic);
+            signer.update(msg, 0, msg.length);
+            if (signer.verifySignature(sig))
+            {
+                fail("X9.31 signature recovering to a short value verified.");
+            }
+        }
     }
 
     private void shouldPassSignatureTest1()

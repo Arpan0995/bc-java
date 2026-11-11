@@ -205,16 +205,21 @@ public class X931Signer
     public boolean verifySignature(
         byte[]      signature)
     {
+        BigInteger t;
+
         try
         {
-            block = cipher.processBlock(signature, 0, signature.length);
+            // the engine returns the recovered value without its leading zeroes, so it is not always
+            // as long as the modulus. It is kept apart from the block the signature is checked
+            // against, which is, and which whichever of the value and its difference from the
+            // modulus is taken below will always fit.
+            t = new BigInteger(1, cipher.processBlock(signature, 0, signature.length));
         }
         catch (Exception e)
         {
             return false;
         }
 
-        BigInteger t = new BigInteger(1, block);
         BigInteger f;
 
         if ((t.intValue() & 15) == 12)

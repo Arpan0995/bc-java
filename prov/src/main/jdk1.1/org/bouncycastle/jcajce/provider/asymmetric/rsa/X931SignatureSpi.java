@@ -44,6 +44,11 @@ public class X931SignatureSpi
         PublicKey publicKey)
         throws InvalidKeyException
     {
+        if (!(publicKey instanceof RSAPublicKey))
+        {
+            throw new InvalidKeyException("Supplied key is not a RSAPublicKey instance");
+        }
+
         CipherParameters param = RSAUtil.generatePublicKeyParameter((RSAPublicKey)publicKey);
 
         signer.init(false, param);
@@ -53,6 +58,11 @@ public class X931SignatureSpi
         PrivateKey privateKey)
         throws InvalidKeyException
     {
+        if (!(privateKey instanceof RSAPrivateKey))
+        {
+            throw new InvalidKeyException("Supplied key is not a RSAPrivateKey instance");
+        }
+
         CipherParameters param = RSAUtil.generatePrivateKeyParameter((RSAPrivateKey)privateKey);
 
         signer.init(true, param);
@@ -93,9 +103,17 @@ public class X931SignatureSpi
         byte[]  sigBytes) 
         throws SignatureException
     {
-        boolean yes = signer.verifySignature(sigBytes);
-
-        return yes;
+        try
+        {
+            return signer.verifySignature(sigBytes);
+        }
+        finally
+        {
+            // however this method is left the message has been consumed, and the object goes back
+            // to the state initVerify left it in: the signer has ways out of a failed verification
+            // that leave the message in its digest, for the next one to be added to.
+            signer.reset();
+        }
     }
 
     protected void engineSetParameter(
