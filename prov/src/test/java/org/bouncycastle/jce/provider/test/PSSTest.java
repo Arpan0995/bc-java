@@ -316,6 +316,8 @@ public class PSSTest
         rawModeTest("SHA384withRSA/PSS", NISTObjectIdentifiers.id_sha384, priv2048Key, pub2048Key, random);
         rawModeTest("SHA512withRSA/PSS", NISTObjectIdentifiers.id_sha512, priv2048Key, pub2048Key, random);
 
+        rawModeFailedVerifyTest(priv2048Key, pub2048Key);
+
         testShake128Pss();
         testShake256Pss();
         testShake128Sha256Pss();
@@ -604,6 +606,82 @@ public class PSSTest
         s.update(msg);
 
         isTrue("2 sha512 shake256 failed", s.verify(sig));
+    }
+
+    /**
+     * In raw mode the one digest object the lightweight signer is given stands in turn for two
+     * things, the hash that is passed in and then the hash calculated over M', and a verification
+     * that failed before it reached the second left it a turn out. Whatever the Signature was used
+     * for next then threw ArrayIndexOutOfBoundsException - verifying or signing, and initialising
+     * it again made no difference, as that did not put the turn back.
+     */
+    private void rawModeFailedVerifyTest(PrivateKey privKey, PublicKey pubKey)
+        throws Exception
+    {
+        PSSParameterSpec spec = new PSSParameterSpec("SHA-256", "MGF1", MGF1ParameterSpec.SHA256, 32, 1);
+        byte[] hash = MessageDigest.getInstance("SHA-256", "BC").digest(msg1a);
+
+        Signature rawSig = Signature.getInstance("RAWRSASSA-PSS", "BC");
+
+        rawSig.setParameter(spec);
+
+        rawSig.initSign(privKey);
+        rawSig.update(hash);
+        byte[] sig = rawSig.sign();
+
+        byte[] flipped = Arrays.clone(sig);
+
+        flipped[flipped.length / 2] ^= 0x01;
+
+        byte[][] malformed = new byte[][]
+            {
+                flipped,                                // a signature, but of nothing
+                Arrays.copyOf(sig, sig.length - 1),     // truncated
+                Arrays.append(sig, (byte)0),            // longer than the key allows
+                new byte[sig.length],                   // zero
+                new byte[0]                             // nothing at all
+            };
+
+        // the same object, taking the next message as it is.
+        rawSig.initVerify(pubKey);
+
+        for (int i = 0; i != malformed.length; i++)
+        {
+            rawSig.update(hash);
+            isTrue("raw mode malformed signature " + i + " verified", !rawSig.verify(malformed[i]));
+
+            rawSig.update(hash);
+            isTrue("raw mode verification failed after malformed signature " + i, rawSig.verify(sig));
+        }
+
+        // initialised again after the failure, for verification
+        rawSig.update(hash);
+        isTrue("raw mode malformed signature verified", !rawSig.verify(flipped));
+
+        rawSig.initVerify(pubKey);
+        rawSig.update(hash);
+        isTrue("raw mode verification failed after malformed signature and initVerify", rawSig.verify(sig));
+
+        // and for signing
+        rawSig.update(hash);
+        isTrue("raw mode malformed signature verified", !rawSig.verify(flipped));
+
+        rawSig.initSign(privKey);
+        rawSig.update(hash);
+        byte[] sigAfter = rawSig.sign();
+
+        rawSig.initVerify(pubKey);
+        rawSig.update(hash);
+        isTrue("raw mode signature generated after malformed signature failed", rawSig.verify(sigAfter));
+
+        // a signature that fails only on the hash it was made over was never a problem, and still is not.
+        byte[] otherHash = MessageDigest.getInstance("SHA-256", "BC").digest(hash);
+
+        rawSig.update(otherHash);
+        isTrue("raw mode signature verified for another hash", !rawSig.verify(sig));
+
+        rawSig.update(hash);
+        isTrue("raw mode verification failed after signature for another hash", rawSig.verify(sig));
     }
 
     private void rawModeTest(String sigName, ASN1ObjectIdentifier digestOID,

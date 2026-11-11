@@ -250,7 +250,18 @@ public class PSSSignatureSpi
         byte[]  sigBytes) 
         throws SignatureException
     {
-        return pss.verifySignature(sigBytes);
+        try
+        {
+            return pss.verifySignature(sigBytes);
+        }
+        finally
+        {
+            // however this method is left the message has been consumed, and the object goes back
+            // to the state initVerify left it in. For the standard digests that has already happened;
+            // in raw mode it is what puts the content digest back to the first of its two turns when
+            // the verification failed before taking the second.
+            pss.reset();
+        }
     }
 
     protected void engineSetParameter(
@@ -756,9 +767,12 @@ public class PSSSignatureSpi
                 baseDigest.doFinal(out, outOff);
             }
 
+            // reset() goes back to the first turn, so the one just taken is noted before it is called.
+            boolean wasOddTime = oddTime;
+
             reset();
 
-            oddTime = !oddTime;
+            oddTime = !wasOddTime;
 
             return res.length;
         }
@@ -767,6 +781,9 @@ public class PSSSignatureSpi
         {
             bOut.reset();
             baseDigest.reset();
+            // a reset from outside starts on a new signature: whichever turn was due, the next
+            // doFinal() is the first of a pair again and hands back the hash it was given.
+            oddTime = true;
         }
 
         public int getByteLength()
